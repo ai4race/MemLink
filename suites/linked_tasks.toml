@@ -1,0 +1,59 @@
+[[tasks]]
+id = "a1"
+group = "knowledge"
+topic = "StateRef shared memory architecture"
+prompt = "Collect evidence about structured protocol, StateRef exchange and shared memory reuse."
+tags = ["knowledge", "summary", "stateref"]
+
+[[tasks]]
+id = "a2"
+group = "knowledge"
+topic = "StateRef shared memory architecture follow-up"
+prompt = "Answer a follow-up about reducing repeated retrieval using the prior StateRef evidence."
+tags = ["knowledge", "summary", "stateref"]
+
+[[tasks]]
+id = "a3"
+group = "knowledge"
+topic = "StateRef shared memory architecture comparison"
+prompt = "Compare pure text collaboration with structured StateRef collaboration using prior conclusions."
+tags = ["knowledge", "comparison", "stateref"]
+
+[[tasks]]
+id = "b1"
+group = "code"
+topic = "Rust TODO analysis strategy"
+prompt = "Analyze a Rust helper and produce a reusable bug-fix strategy."
+tags = ["code", "analysis", "strategy"]
+code = '''
+fn normalize(input: &str) -> String {
+    // TODO: trim whitespace before lowercasing
+    input.to_lowercase()
+}
+'''
+
+[[tasks]]
+id = "b2"
+group = "code"
+topic = "Rust TODO analysis strategy variant"
+prompt = "Handle a similar Rust TODO pattern and reuse the previous analysis strategy."
+tags = ["code", "analysis", "strategy"]
+code = '''
+fn slug(input: &str) -> String {
+    // TODO: collapse spaces before replacing them
+    input.trim().replace(' ', "-")
+}
+'''
+
+[[tasks]]
+id = "b3"
+group = "code"
+topic = "Rust TODO analysis strategy memory"
+prompt = "Summarize the problem-pattern, checking method and fix suggestion as reusable memory."
+tags = ["code", "analysis", "strategy"]
+code = '''
+fn parse_flag(input: &str) -> bool {
+    // TODO: accept uppercase TRUE
+    input == "true"
+}
+'''

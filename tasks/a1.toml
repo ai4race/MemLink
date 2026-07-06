@@ -1,0 +1,4 @@
+group = "knowledge"
+topic = "StateRef shared memory architecture"
+prompt = "Explain how structured protocol, StateRef and shared memory reduce repeated multi-agent communication overhead."
+tags = ["knowledge", "summary", "stateref"]

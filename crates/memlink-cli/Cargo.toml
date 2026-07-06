@@ -1,0 +1,25 @@
+[package]
+name = "memlink-cli"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[[bin]]
+name = "memlink"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+memlink-evaluator = { path = "../memlink-evaluator" }
+memlink-memory = { path = "../memlink-memory" }
+memlink-observe = { path = "../memlink-observe" }
+memlink-protocol = { path = "../memlink-protocol" }
+memlink-runtime = { path = "../memlink-runtime" }
+memlink-state = { path = "../memlink-state" }
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+toml.workspace = true
+uuid.workspace = true

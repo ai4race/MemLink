@@ -1,0 +1,20 @@
+[package]
+name = "memlink-state"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+blake3.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+hex.workspace = true
+memlink-protocol = { path = "../memlink-protocol" }
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+uuid.workspace = true
