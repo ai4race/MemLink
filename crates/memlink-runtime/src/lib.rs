@@ -233,6 +233,7 @@ impl Runtime {
     }
 
     async fn handshake(&self, trace: &TraceContext, mode: RunMode) -> Result<()> {
+        let local_version = ProtocolVersion::default();
         for agent in &self.agents {
             let capabilities = agent.capabilities();
             self.evaluator
@@ -246,15 +247,48 @@ impl Runtime {
                     },
                 ))
                 .await?;
-            let message = Message::new(
-                AgentId::new("runtime"),
-                Target::Agent(agent.id()),
-                MessageKind::CapabilityAdvertise,
-                Payload::Capabilities(capabilities),
-                vec![],
-            );
             if mode == RunMode::Structured {
-                self.record_message(trace, &message).await?;
+                let handshake_msg = Message::new(
+                    AgentId::new("runtime"),
+                    Target::Agent(agent.id()),
+                    MessageKind::Handshake,
+                    Payload::Capabilities(capabilities.clone()),
+                    vec![],
+                );
+                self.record_message(trace, &handshake_msg).await?;
+
+                // Protocol version compatibility check
+                for _cap in &capabilities {
+                    if let Err(msg) = local_version.compatible_with(&ProtocolVersion::default()) {
+                        self.evaluator
+                            .record(Event::new(
+                                trace.experiment_id,
+                                trace.task_id,
+                                EventKind::Error {
+                                    message: format!(
+                                        "protocol version mismatch with agent {}: {}",
+                                        agent.id(),
+                                        msg
+                                    ),
+                                },
+                            ))
+                            .await?;
+                        anyhow::bail!(
+                            "protocol version mismatch with agent {}: {}",
+                            agent.id(),
+                            msg
+                        );
+                    }
+                }
+
+                let cap_msg = Message::new(
+                    AgentId::new("runtime"),
+                    Target::Agent(agent.id()),
+                    MessageKind::CapabilityAdvertise,
+                    Payload::Capabilities(capabilities),
+                    vec![],
+                );
+                self.record_message(trace, &cap_msg).await?;
             }
         }
         Ok(())
@@ -683,6 +717,8 @@ impl Agent for SummarizerAgent {
             keywords: keywords(&format!("{topic} {prompt} {summary}")),
             embedding,
             evidence_refs: msg.state_refs.clone(),
+            quality_score: 0.5,
+            reuse_count: 0i64,
         };
         let memory_id = ctx.memory.put(memory).await?;
         ctx.evaluator

@@ -266,7 +266,7 @@ pub fn deterministic_embedding(text: &str, dims: usize) -> Vec<f32> {
 }
 
 pub fn embedding_to_bytes(embedding: &[f32]) -> Bytes {
-    let mut bytes = Vec::with_capacity(std::mem::size_of_val(embedding));
+    let mut bytes = Vec::with_capacity(embedding.len() * 4);
     for value in embedding {
         bytes.extend_from_slice(&value.to_le_bytes());
     }

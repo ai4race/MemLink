@@ -177,9 +177,8 @@ pub async fn summarize_events(
                 summary.encoded_bytes += encoded_bytes;
                 summary.state_bytes += state_bytes;
             }
-            EventKind::StateTransfer { byte_len, .. } => {
+            EventKind::StateTransfer { .. } => {
                 summary.state_transfer_count += 1;
-                summary.state_bytes += byte_len;
             }
             EventKind::MemoryQuery {
                 hit_count,
@@ -242,7 +241,7 @@ pub fn comparison_report(text: &MetricsSummary, structured: &MetricsSummary) -> 
     )
 }
 
-fn saving(current: u64, baseline: u64) -> f64 {
+pub fn saving(current: u64, baseline: u64) -> f64 {
     if baseline == 0 {
         0.0
     } else {

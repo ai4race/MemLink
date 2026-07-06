@@ -45,6 +45,26 @@ pub struct ProtocolVersion {
     pub minor: u16,
 }
 
+impl ProtocolVersion {
+    /// Check compatibility: major must match exactly, minor must be >= remote minor.
+    /// Returns Ok(()) if compatible, or a description of the incompatibility.
+    pub fn compatible_with(&self, remote: &ProtocolVersion) -> Result<(), String> {
+        if self.major != remote.major {
+            return Err(format!(
+                "major version mismatch: local={} remote={}",
+                self.major, remote.major
+            ));
+        }
+        if self.minor < remote.minor {
+            return Err(format!(
+                "local minor {} older than remote minor {}",
+                self.minor, remote.minor
+            ));
+        }
+        Ok(())
+    }
+}
+
 impl Default for ProtocolVersion {
     fn default() -> Self {
         Self { major: 1, minor: 0 }
@@ -133,6 +153,8 @@ pub enum ActionType {
     ExtractEvidence,
     ExecuteTool,
     Summarize,
+    StoreMemory,
+    EvaluateRun,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

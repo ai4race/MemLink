@@ -339,8 +339,10 @@ async fn audit_demo(
         summarize_events(&structured_events, Some(RunMode::Structured)).await?;
     let state_file_count = count_files(state_dir).await?;
     let memory_hit_count = read_memory_hit_count(&memory_search).await?;
-    let text_saving = saving(structured_summary.text_chars, text_summary.text_chars);
-    let byte_saving = saving(structured_summary.encoded_bytes, text_summary.encoded_bytes);
+    let text_saving =
+        memlink_evaluator::saving(structured_summary.text_chars, text_summary.text_chars);
+    let byte_saving =
+        memlink_evaluator::saving(structured_summary.encoded_bytes, text_summary.text_chars);
     let checks = vec![
         check(
             "text_tasks",
@@ -439,9 +441,10 @@ async fn run_demo(output_dir: PathBuf, rounds: usize) -> Result<()> {
     let _ = tokio::fs::remove_file(&structured_memory_db).await;
     let suite = read_suite(&suite).await?;
     let experiment_id = Uuid::new_v4();
+    let mut failures = Vec::new();
     for index in 0..rounds {
         let task = suite.tasks[index % suite.tasks.len()].clone();
-        run_one(
+        if let Err(error) = run_one(
             RunMode::Text,
             task.clone(),
             text_memory_db.clone(),
@@ -450,8 +453,11 @@ async fn run_demo(output_dir: PathBuf, rounds: usize) -> Result<()> {
             StateBackend::MmapFile,
             state_dir.join("text"),
         )
-        .await?;
-        run_one(
+        .await
+        {
+            failures.push(format!("text round {} failed: {error:#}", index + 1));
+        }
+        if let Err(error) = run_one(
             RunMode::Structured,
             task,
             structured_memory_db.clone(),
@@ -460,7 +466,13 @@ async fn run_demo(output_dir: PathBuf, rounds: usize) -> Result<()> {
             StateBackend::MmapFile,
             state_dir.join("structured"),
         )
-        .await?;
+        .await
+        {
+            failures.push(format!("structured round {} failed: {error:#}", index + 1));
+        }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!("demo failed: {}", failures.join("; "));
     }
     let text_summary = summarize_events(&text_events, Some(RunMode::Text)).await?;
     let structured_summary =
@@ -576,12 +588,4 @@ async fn read_memory_hit_count(path: &std::path::Path) -> Result<usize> {
     let hits: Vec<serde_json::Value> = serde_json::from_str(&content)
         .with_context(|| format!("parse memory search file {}", path.display()))?;
     Ok(hits.len())
-}
-
-fn saving(current: u64, baseline: u64) -> f64 {
-    if baseline == 0 {
-        0.0
-    } else {
-        1.0 - current as f64 / baseline as f64
-    }
 }

@@ -19,6 +19,8 @@ pub struct MemoryUnit {
     pub keywords: Vec<String>,
     pub embedding: Vec<f32>,
     pub evidence_refs: Vec<StateRef>,
+    pub quality_score: f32,
+    pub reuse_count: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +45,7 @@ pub trait MemoryStore: Send + Sync {
     async fn put(&self, memory: MemoryUnit) -> Result<MemoryId, MemoryError>;
     async fn search(&self, query: MemoryQuery) -> Result<Vec<MemoryHit>, MemoryError>;
     async fn record_reuse(&self, event: MemoryReuseEvent) -> Result<(), MemoryError>;
+    async fn update_quality(&self, memory_id: MemoryId, delta: f32) -> Result<(), MemoryError>;
 }
 
 #[derive(Debug, Error)]
@@ -88,7 +91,9 @@ impl SqliteMemoryStore {
                 tags_json TEXT NOT NULL,
                 keywords_json TEXT NOT NULL,
                 embedding_json TEXT NOT NULL,
-                evidence_refs_json TEXT NOT NULL
+                evidence_refs_json TEXT NOT NULL,
+                quality_score REAL NOT NULL DEFAULT 0.0,
+                reuse_count INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS memory_tags (
                 memory_id TEXT NOT NULL,
@@ -110,8 +115,37 @@ impl SqliteMemoryStore {
             );
             "#,
         )?;
+        add_column_if_missing(
+            &connection,
+            "memories",
+            "quality_score",
+            "ALTER TABLE memories ADD COLUMN quality_score REAL NOT NULL DEFAULT 0.0",
+        )?;
+        add_column_if_missing(
+            &connection,
+            "memories",
+            "reuse_count",
+            "ALTER TABLE memories ADD COLUMN reuse_count INTEGER NOT NULL DEFAULT 0",
+        )?;
         Ok(())
     }
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    statement: &str,
+) -> Result<(), MemoryError> {
+    let mut pragma = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = pragma.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(());
+        }
+    }
+    connection.execute(statement, [])?;
+    Ok(())
 }
 
 #[async_trait]
@@ -122,7 +156,21 @@ impl MemoryStore for SqliteMemoryStore {
             let mut connection = store.connect()?;
             let transaction = connection.transaction()?;
             transaction.execute(
-                "INSERT OR REPLACE INTO memories VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                r#"
+                INSERT OR REPLACE INTO memories (
+                    memory_id,
+                    source_agent,
+                    created_at,
+                    task_topic,
+                    summary,
+                    tags_json,
+                    keywords_json,
+                    embedding_json,
+                    evidence_refs_json,
+                    quality_score,
+                    reuse_count
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
                 params![
                     memory.memory_id.to_string(),
                     memory.source_agent.0,
@@ -133,6 +181,8 @@ impl MemoryStore for SqliteMemoryStore {
                     serde_json::to_string(&memory.keywords)?,
                     serde_json::to_string(&memory.embedding)?,
                     serde_json::to_string(&memory.evidence_refs)?,
+                    memory.quality_score,
+                    memory.reuse_count as i64,
                 ],
             )?;
             transaction.execute(
@@ -166,7 +216,7 @@ impl MemoryStore for SqliteMemoryStore {
         task::spawn_blocking(move || {
             let connection = store.connect()?;
             let mut statement = connection.prepare(
-                "SELECT memory_id, task_topic, summary, tags_json, keywords_json, embedding_json FROM memories ORDER BY created_at DESC",
+                "SELECT memory_id, task_topic, summary, tags_json, keywords_json, embedding_json, quality_score, reuse_count, created_at FROM memories ORDER BY created_at DESC",
             )?;
             let rows = statement.query_map([], |row| {
                 Ok((
@@ -176,12 +226,16 @@ impl MemoryStore for SqliteMemoryStore {
                     row.get::<_, String>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, String>(5)?,
+                    row.get::<_, f32>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             })?;
             let query_terms = terms(&query.query);
+            let now = Utc::now();
             let mut hits = Vec::new();
             for row in rows {
-                let (memory_id, topic, summary, tags_json, keywords_json, embedding_json) = row?;
+                let (memory_id, topic, summary, tags_json, keywords_json, embedding_json, quality_score, _reuse_count, created_at_str) = row?;
                 let tags: Vec<String> = serde_json::from_str(&tags_json)?;
                 let keywords: Vec<String> = serde_json::from_str(&keywords_json)?;
                 let embedding: Vec<f32> = serde_json::from_str(&embedding_json)?;
@@ -197,9 +251,19 @@ impl MemoryStore for SqliteMemoryStore {
                     query_terms.iter().filter(|term| searchable.contains(term.as_str())).count() as f32 / query_terms.len() as f32
                 };
                 let semantic_score = cosine(&query.embedding, &embedding).max(0.0);
-                let score = keyword_score * 0.45 + tag_score * 0.25 + semantic_score * 0.30;
+                // recency: 1.0 for now, decaying to 0.0 over ~30 days
+                let created_at = DateTime::parse_from_rfc3339(&created_at_str)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or(now);
+                let age_hours = (now - created_at).num_hours().max(0) as f32;
+                let recency_score = (-age_hours / 720.0).exp(); // ~30 day half-life
+                let score = 0.45 * semantic_score
+                    + 0.25 * keyword_score
+                    + 0.15 * tag_score
+                    + 0.10 * quality_score
+                    + 0.05 * recency_score;
                 if score > 0.05 {
-                    let reason = format!("keyword={keyword_score:.2}, tag={tag_score:.2}, semantic={semantic_score:.2}");
+                    let reason = format!("semantic={semantic_score:.2}, keyword={keyword_score:.2}, tag={tag_score:.2}, quality={quality_score:.2}, recency={recency_score:.2}");
                     hits.push(MemoryHit {
                         memory_id: Uuid::parse_str(&memory_id).unwrap_or_else(|_| Uuid::nil()),
                         topic,
@@ -232,6 +296,25 @@ impl MemoryStore for SqliteMemoryStore {
                     event.created_at.to_rfc3339(),
                 ],
             )?;
+            if event.adopted {
+                connection.execute(
+                    "UPDATE memories SET reuse_count = reuse_count + 1, quality_score = MIN(1.0, quality_score + 0.05) WHERE memory_id = ?1",
+                    params![event.memory_id.to_string()],
+                )?;
+            }
+            Ok(())
+        })
+        .await?
+    }
+
+    async fn update_quality(&self, memory_id: MemoryId, delta: f32) -> Result<(), MemoryError> {
+        let store = self.clone();
+        task::spawn_blocking(move || {
+            let connection = store.connect()?;
+            connection.execute(
+                "UPDATE memories SET quality_score = MIN(1.0, MAX(0.0, quality_score + ?1)) WHERE memory_id = ?2",
+                params![delta, memory_id.to_string()],
+            )?;
             Ok(())
         })
         .await?
@@ -245,7 +328,7 @@ impl SqliteMemoryStore {
             let connection = store.connect()?;
             connection
                 .query_row(
-                    "SELECT source_agent, created_at, task_topic, summary, tags_json, keywords_json, embedding_json, evidence_refs_json FROM memories WHERE memory_id = ?1",
+                    "SELECT source_agent, created_at, task_topic, summary, tags_json, keywords_json, embedding_json, evidence_refs_json, quality_score, reuse_count FROM memories WHERE memory_id = ?1",
                     params![memory_id.to_string()],
                     |row| {
                         let created_at = row.get::<_, String>(1)?;
@@ -262,6 +345,8 @@ impl SqliteMemoryStore {
                             keywords: serde_json::from_str(&row.get::<_, String>(5)?).unwrap_or_default(),
                             embedding: serde_json::from_str(&row.get::<_, String>(6)?).unwrap_or_default(),
                             evidence_refs: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(),
+                            quality_score: row.get::<_, f32>(8).unwrap_or(0.0),
+                            reuse_count: row.get::<_, i64>(9).unwrap_or(0),
                         })
                     },
                 )
