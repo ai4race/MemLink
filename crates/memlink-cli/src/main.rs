@@ -169,6 +169,8 @@ async fn main() -> Result<()> {
             let _ = tokio::fs::remove_file(&structured_events).await;
             let _ = tokio::fs::remove_file(&text_memory_db).await;
             let _ = tokio::fs::remove_file(&structured_memory_db).await;
+            let _ = tokio::fs::remove_dir_all(state_dir.join("text")).await;
+            let _ = tokio::fs::remove_dir_all(state_dir.join("structured")).await;
             let suite = read_suite(&suite).await?;
             let experiment_id = Uuid::new_v4();
             for index in 0..rounds {
@@ -342,7 +344,7 @@ async fn audit_demo(
     let text_saving =
         memlink_evaluator::saving(structured_summary.text_chars, text_summary.text_chars);
     let byte_saving =
-        memlink_evaluator::saving(structured_summary.encoded_bytes, text_summary.text_chars);
+        memlink_evaluator::saving(structured_summary.encoded_bytes, text_summary.encoded_bytes);
     let checks = vec![
         check(
             "text_tasks",
@@ -543,9 +545,16 @@ async fn read_suite(path: &PathBuf) -> Result<BenchSuite> {
     let content = tokio::fs::read_to_string(path)
         .await
         .with_context(|| format!("read suite file {}", path.display()))?;
-    toml::from_str(&content)
+    let suite: BenchSuite = toml::from_str(&content)
         .or_else(|_| serde_json::from_str(&content))
-        .with_context(|| format!("parse suite file {}", path.display()))
+        .with_context(|| format!("parse suite file {}", path.display()))?;
+    if suite.tasks.is_empty() {
+        anyhow::bail!(
+            "suite file {} must contain at least one task",
+            path.display()
+        );
+    }
+    Ok(suite)
 }
 
 fn mode_memory_path(path: &std::path::Path, mode: &str) -> PathBuf {

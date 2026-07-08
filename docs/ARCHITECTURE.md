@@ -118,8 +118,8 @@ pub enum RunMode {
 }
 ```
 
-- `Text`：Agent 间 payload 使用自然语言描述上下文、证据和结果，不传递 `StateRef`，历史记忆以文本拼接方式提供。
-- `Structured`：Agent 间 payload 使用 `ActionRequest`、`ActionResult`、`MemoryHit` 等强类型结构，大对象通过 `StateRef` 传递。
+- `Text`：Agent 间 payload 使用自然语言描述上下文、证据和结果，不传递 `StateRef`，不写入或复用结构化共享记忆。
+- `Structured`：Agent 间 payload 使用 `ActionRequest`、`ActionResult`、`MemoryHit` 等强类型结构，大对象通过 `StateRef` 传递，并写入/复用 SQLite 共享记忆。
 - 两种模式共享同一任务输入、Agent 集、工具集合、超时策略和 evaluator。
 
 ## 3. 多 Agent 运行时
@@ -458,11 +458,11 @@ stateDiagram-v2
 - Executor 可复用历史工具策略，但执行结果必须重新验证。
 - Summarizer 标记最终结论中哪些部分来自历史记忆复用。
 
-## 7. CodeAct 与安全沙箱
+## 7. CodeAct 与受限执行
 
 ### 7.1 执行目标
 
-CodeAct 允许 Agent 生成代码完成数据处理、验证、转换或本地工具调用。为了安全和可复现，所有可执行代码必须经过 sandbox 模块。
+CodeAct 允许 Agent 生成代码完成数据处理、验证、转换或本地工具调用。为了可复现和降低误操作风险，所有可执行代码必须经过 sandbox 模块。当前 MVP 的受限子进程后端不是 WASM、容器或虚拟机级强隔离，不应用于执行不可信代码。
 
 ### 7.2 Sandbox 接口
 
@@ -490,15 +490,15 @@ pub struct SandboxRequest {
 
 | 阶段 | 后端 | 约束 |
 | --- | --- | --- |
-| MVP | 受限子进程/解释器封装 | 临时目录、超时、输出大小限制 |
+| MVP | 受限子进程/解释器封装 | 临时目录、清理环境、超时、输出大小限制，Unix 下附加进程组清理与 rlimit |
 | 系统强化 | WASM/WASI | 默认无网络、受限文件系统、内存限制 |
 | 生产演进 | 容器/gVisor/Firecracker | 强隔离、多租户、审计策略 |
 
 默认安全策略：
 
-- 禁止网络访问，除非任务配置显式开启。
-- 只挂载临时工作目录，不给仓库根目录写权限。
-- 限制 CPU 时间、内存、文件数和输出大小。
+- MVP 后端不主动传入网络配置，但进程级强网络隔离需要 WASM/容器后端承接。
+- 进程工作目录固定为临时目录，不给仓库根目录写权限；不阻止同用户绝对路径读取。
+- 限制 CPU 时间、虚拟内存、文件数、文件大小和输出大小。
 - 所有执行请求、拒绝原因和结果都写入 event log。
 
 ## 8. 评测与可复现实验
@@ -511,7 +511,7 @@ pub struct SandboxRequest {
 - 同一 Agent 集合和工具集合。
 - 同一 embedding 配置或 deterministic fallback。
 - 同一随机种子、超时、最大步骤数和失败策略。
-- 同一记忆初始状态；连续任务中只允许前序任务自然写入记忆。
+- 同一记忆初始状态；当前 MVP 仅 structured mode 写入和复用共享记忆，text mode 作为无共享记忆基线。
 
 ### 8.2 指标与公式
 
@@ -532,7 +532,7 @@ pub struct SandboxRequest {
 
 ```text
 text_saving = 1 - structured_text_chars / text_mode_text_chars
-byte_saving = 1 - structured_encoded_bytes / text_mode_text_chars
+byte_saving = 1 - structured_encoded_bytes / text_mode_encoded_bytes
 latency_improvement = 1 - structured_duration_ms / text_mode_duration_ms
 effective_reuse_rate = adopted_memory_hits / total_memory_hits
 ```
@@ -674,7 +674,7 @@ pub struct ProtocolError {
 
 - 临时 state 按 TTL 清理，大对象默认不写入长期 memory。
 - 记忆写入保留证据引用和来源，避免不可追溯结论污染记忆库。
-- 沙箱默认无网络、临时目录、资源上限和审计日志。
+- MVP 受限子进程使用临时目录、清理环境、资源上限和超时；强网络/文件系统隔离由后续 WASM/容器后端提供。
 - event log 可包含任务摘要和指标，但敏感 payload 应支持脱敏或 hash 化。
 
 ## 11. 实施路线与验收标准

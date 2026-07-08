@@ -1,8 +1,8 @@
 use bytes::Bytes;
 use memlink_protocol::{AgentId, StateFormat, StateTransport};
 use memlink_state::{
-    InMemoryStateStore, MmapFileStateStore, StateMeta, StateStore, deterministic_embedding,
-    embedding_to_bytes,
+    InMemoryStateStore, MmapFileStateStore, StateError, StateMeta, StateStore,
+    deterministic_embedding, embedding_to_bytes,
 };
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ async fn stores_embedding_state_ref_with_checksum() {
     assert_eq!(state_ref.producer, AgentId::new("retriever"));
     assert_eq!(
         store.get(&state_ref).await.expect("get state"),
-        Bytes::from(embedding_to_bytes(&embedding))
+        embedding_to_bytes(&embedding)
     );
 }
 
@@ -55,8 +55,19 @@ async fn stores_large_state_in_mmap_file_backend() {
     assert_eq!(state_ref.byte_len, bytes.len() as u64);
     assert_eq!(store.get(&state_ref).await.expect("get file state"), bytes);
 
+    let file_path = root.join(format!("{}.bin", state_ref.state_id));
+    std::fs::write(&file_path, b"corrupt").expect("corrupt state file");
+    assert!(matches!(
+        store.get(&state_ref).await,
+        Err(StateError::ChecksumMismatch(id)) if id == state_ref.state_id
+    ));
+    std::fs::write(&file_path, Bytes::from(vec![7_u8; 128 * 1024])).expect("restore state file");
+
     tokio::time::sleep(Duration::from_millis(5)).await;
     assert_eq!(store.delete_expired().await.expect("delete expired"), 1);
-    assert!(store.get(&state_ref).await.is_err());
+    assert!(matches!(
+        store.get(&state_ref).await,
+        Err(StateError::NotFound(id)) if id == state_ref.state_id
+    ));
     let _ = std::fs::remove_dir_all(root);
 }

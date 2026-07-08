@@ -43,7 +43,7 @@ MEMLINK_DEMO_ROUNDS=2 MEMLINK_MIN_TEXT_SAVING=-1.0 scripts/verify.sh
 | 10 轮连续任务 | `scripts/verify.sh` 默认 `demo --rounds 10`，audit 检查 min tasks | 已满足 |
 | 性能统计展示 | `reports/demo/report.md` 与 JSONL event log | 已满足 |
 | Unix Domain Socket | `memlink-transport` + `unix_socket` 测试 | 已满足 |
-| CodeAct 沙箱 | `memlink-sandbox` 受限子进程，Executor 接入 | 已满足 |
+| CodeAct 受限执行 | `memlink-sandbox` 受限子进程，Unix 下附加进程组清理与 rlimit，Executor 接入 | 已满足 MVP；不声称 WASM/容器级强隔离 |
 | 系统观测 | `memlink observe` 与 demo `observe.json` | 已满足 |
 | 部署/提交文档 | `docs/DEPLOYMENT.md`、`docs/SUBMISSION.md` | 已满足 |
 | 演示视频材料 | `docs/DEMO_SCRIPT.md` 与 `scripts/record_demo.sh` 提供录制脚本和 transcript 生成 | 已满足素材，二进制视频可按脚本录制 |
@@ -53,7 +53,7 @@ MEMLINK_DEMO_ROUNDS=2 MEMLINK_MIN_TEXT_SAVING=-1.0 scripts/verify.sh
 以下属于后续可替换/增强项，当前已有接口或退化实现，但不声称已完整实现：
 
 - 真实 POSIX shared memory 与 FD passing。
-- WASM/WASI backend；当前是受限子进程 sandbox。
+- WASM/WASI backend；当前是受限子进程执行后端，不应用于执行不可信代码。
 - eBPF/aya 程序；当前是轻量系统观测快照。
 
 ## 结论

@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use memlink_protocol::StateRef;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::time::Duration;
 use tempfile::TempDir;
 use thiserror::Error;
 use tokio::process::Command;
-use tokio::time::timeout;
+use tokio::time;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +49,9 @@ pub struct RestrictedProcessSandbox {
     pub shell_bin: String,
     pub default_timeout_ms: u64,
     pub max_output_bytes: usize,
+    pub max_memory_bytes: u64,
+    pub max_file_bytes: u64,
+    pub max_cpu_seconds: u64,
 }
 
 impl Default for RestrictedProcessSandbox {
@@ -57,6 +61,9 @@ impl Default for RestrictedProcessSandbox {
             shell_bin: "sh".to_owned(),
             default_timeout_ms: 5_000,
             max_output_bytes: 64 * 1024,
+            max_memory_bytes: 256 * 1024 * 1024,
+            max_file_bytes: 16 * 1024 * 1024,
+            max_cpu_seconds: 5,
         }
     }
 }
@@ -93,10 +100,29 @@ impl Sandbox for RestrictedProcessSandbox {
         command.env_clear();
         command.env("PATH", "/usr/bin:/bin:/usr/local/bin");
         command.env("HOME", tempdir.path());
-        let output = timeout(Duration::from_millis(timeout_ms), command.output())
-            .await
-            .map_err(|_| SandboxError::Timeout(timeout_ms))?
-            .map_err(SandboxError::Io)?;
+        command.stdin(Stdio::null());
+        command.stdout(Stdio::piped());
+        command.stderr(Stdio::piped());
+        apply_process_limits(
+            &mut command,
+            self.max_memory_bytes,
+            self.max_file_bytes,
+            self.max_cpu_seconds,
+        );
+        let child = command.spawn().map_err(SandboxError::Io)?;
+        let child_id = child.id();
+        let output = match time::timeout(
+            Duration::from_millis(timeout_ms),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(output) => output.map_err(SandboxError::Io)?,
+            Err(_) => {
+                terminate_child_group(child_id).await;
+                return Err(SandboxError::Timeout(timeout_ms));
+            }
+        };
         let stdout = bounded_utf8(output.stdout, max_output_bytes);
         let stderr = bounded_utf8(output.stderr, max_output_bytes);
         let success = output.status.success();
@@ -151,3 +177,72 @@ fn summarize(success: bool, stdout: &str, stderr: &str) -> String {
     let preview = source.lines().next().unwrap_or_default();
     format!("success={success}; preview={preview}")
 }
+
+#[cfg(unix)]
+fn apply_process_limits(
+    command: &mut Command,
+    max_memory_bytes: u64,
+    max_file_bytes: u64,
+    max_cpu_seconds: u64,
+) {
+    unsafe {
+        command.pre_exec(move || {
+            set_limit(libc::RLIMIT_FSIZE, max_file_bytes)?;
+            set_limit(libc::RLIMIT_CPU, max_cpu_seconds.max(1))?;
+            set_limit(libc::RLIMIT_NOFILE, 64)?;
+            set_memory_limit(max_memory_bytes)?;
+            if libc::setpgid(0, 0) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+fn apply_process_limits(
+    _command: &mut Command,
+    _max_memory_bytes: u64,
+    _max_file_bytes: u64,
+    _max_cpu_seconds: u64,
+) {
+}
+
+#[cfg(unix)]
+fn set_limit(resource: libc::c_int, value: u64) -> std::io::Result<()> {
+    let limit = libc::rlimit {
+        rlim_cur: value,
+        rlim_max: value,
+    };
+    if unsafe { libc::setrlimit(resource as _, &limit) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(all(unix, any(target_os = "linux", target_os = "android")))]
+fn set_memory_limit(max_memory_bytes: u64) -> std::io::Result<()> {
+    if max_memory_bytes > 0 {
+        set_limit(libc::RLIMIT_AS, max_memory_bytes)?;
+    }
+    Ok(())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn set_memory_limit(_max_memory_bytes: u64) -> std::io::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn terminate_child_group(child_id: Option<u32>) {
+    if let Some(pid) = child_id {
+        unsafe {
+            libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn terminate_child_group(_child_id: Option<u32>) {}

@@ -285,11 +285,55 @@ impl Payload {
     pub fn text_chars(&self) -> u64 {
         match self {
             Self::Text(value) => value.chars().count() as u64,
-            _ => serde_json::to_string(self)
-                .map(|value| value.chars().count() as u64)
-                .unwrap_or(0),
+            Self::Empty => 0,
+            Self::Capabilities(capabilities) => capabilities
+                .iter()
+                .map(|capability| {
+                    chars(&capability.input_schema) + chars(&capability.output_schema)
+                })
+                .sum(),
+            Self::ActionRequest(request) => request.params.values().map(|value| chars(value)).sum(),
+            Self::ActionResult(result) => {
+                result
+                    .result
+                    .values()
+                    .map(|value| chars(value))
+                    .sum::<u64>()
+                    + result
+                        .memory_candidates
+                        .iter()
+                        .map(memory_candidate_chars)
+                        .sum::<u64>()
+            }
+            Self::MemoryQuery { query, tags, .. } => {
+                chars(query) + tags.iter().map(|tag| chars(tag)).sum::<u64>()
+            }
+            Self::MemoryHit(payload) => payload.hits.iter().map(memory_hit_chars).sum(),
+            Self::Error(error) => chars(&error.code) + chars(&error.message),
         }
     }
+}
+
+fn chars(value: &str) -> u64 {
+    value.chars().count() as u64
+}
+
+fn memory_candidate_chars(candidate: &MemoryCandidate) -> u64 {
+    chars(&candidate.topic)
+        + chars(&candidate.summary)
+        + candidate.tags.iter().map(|tag| chars(tag)).sum::<u64>()
+        + candidate
+            .keywords
+            .iter()
+            .map(|keyword| chars(keyword))
+            .sum::<u64>()
+}
+
+fn memory_hit_chars(hit: &MemoryHit) -> u64 {
+    chars(&hit.topic)
+        + chars(&hit.summary)
+        + chars(&hit.reason)
+        + hit.tags.iter().map(|tag| chars(tag)).sum::<u64>()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -328,7 +372,10 @@ impl Message {
 
     pub fn refresh_metrics(&mut self) {
         self.metrics.text_chars = self.payload.text_chars();
-        self.metrics.encoded_bytes = postcard::to_allocvec(self)
+        let mut measured = self.clone();
+        measured.metrics.encoded_bytes = 0;
+        measured.metrics.state_bytes = 0;
+        self.metrics.encoded_bytes = postcard::to_allocvec(&measured)
             .map(|bytes| bytes.len() as u64)
             .unwrap_or(0);
         self.metrics.state_bytes = self
@@ -350,4 +397,39 @@ pub struct ProtocolEnvelope {
 pub enum ProtocolError {
     #[error("invalid run mode: {0}")]
     InvalidRunMode(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structured_payload_text_chars_count_string_values_not_json_scaffolding() {
+        let payload = Payload::ActionRequest(ActionRequest {
+            action: ActionType::PlanTask,
+            params: BTreeMap::from([
+                ("topic".to_owned(), "StateRef".to_owned()),
+                ("prompt".to_owned(), "reuse memory".to_owned()),
+            ]),
+            required_capability: Some(ActionType::PlanTask),
+        });
+
+        assert_eq!(payload.text_chars(), 20);
+    }
+
+    #[test]
+    fn message_encoded_byte_metric_is_stable_across_refreshes() {
+        let mut message = Message::new(
+            AgentId::new("planner"),
+            Target::Runtime,
+            MessageKind::ActionResult,
+            Payload::Text("x".repeat(512)),
+            vec![],
+        );
+        let first = message.metrics.encoded_bytes;
+
+        message.refresh_metrics();
+
+        assert_eq!(message.metrics.encoded_bytes, first);
+    }
 }

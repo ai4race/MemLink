@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+libc.workspace = true
 memlink-protocol = { path = "../memlink-protocol" }
 serde.workspace = true
 tempfile.workspace = true

@@ -113,10 +113,13 @@ impl StateStore for MmapFileStateStore {
                 .map(|entry| entry.path.clone())
                 .unwrap_or_else(|| self.state_path(state_ref.state_id))
         };
-        if !path.exists() {
-            return Err(StateError::NotFound(state_ref.state_id));
-        }
-        let bytes = tokio::fs::read(path).await?;
+        let bytes = tokio::fs::read(path).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                StateError::NotFound(state_ref.state_id)
+            } else {
+                StateError::Io(error)
+            }
+        })?;
         let checksum = hex::encode(blake3::hash(&bytes).as_bytes());
         if checksum != state_ref.checksum.value {
             return Err(StateError::ChecksumMismatch(state_ref.state_id));

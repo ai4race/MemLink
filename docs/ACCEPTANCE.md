@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | Agent 间通信支持 Unix Domain Socket | `UnixSocketTransport` 发送结构化 `TransportFrame` | `crates/memlink-transport/src/lib.rs`、`crates/memlink-transport/tests/unix_socket.rs` |
 | 大状态支持 mmap/FD passing/POSIX shared memory | `MmapFileStateStore` file-backed 大状态，`StateRef.transport = MmapFile` | `crates/memlink-state/src/lib.rs`、`crates/memlink-state/tests/state_store.rs` |
-| CodeAct 通过 WASM/WASI 或更强沙箱执行 | 当前采用受限子进程沙箱：临时目录、清理环境、超时、输出限制 | `crates/memlink-sandbox/src/lib.rs`、`crates/memlink-sandbox/tests/restricted_process.rs` |
+| CodeAct 通过 WASM/WASI 或更强沙箱执行 | 当前采用受限子进程后端：临时目录、清理环境、超时、输出限制，Unix 下附加进程组清理与资源限制；不是 WASM/容器级强隔离 | `crates/memlink-sandbox/src/lib.rs`、`crates/memlink-sandbox/tests/restricted_process.rs` |
 | 使用 eBPF 或系统观测工具展示进程/socket/IO/沙箱行为 | `observe` 命令输出进程、socket/fd 快照 | `crates/memlink-observe/src/lib.rs`、`crates/memlink-observe/tests/process_snapshot.rs` |
 | 支持迁移到多进程 Agent 部署 | Protocol、StateStore、Transport、Sandbox 均为 trait/独立 crate，Unix socket 已可传 frame | `crates/memlink-protocol`、`crates/memlink-transport` |
 

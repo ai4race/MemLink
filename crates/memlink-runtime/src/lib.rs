@@ -110,7 +110,6 @@ impl Runtime {
         self.record_message(&trace, &plan).await?;
 
         let retrieval_request = self.next_request(
-            &plan,
             planner.id(),
             retriever.id(),
             ActionType::SearchMemory,
@@ -145,7 +144,6 @@ impl Runtime {
         );
         if task.code.is_some() {
             let exec_request = self.next_request(
-                &retrieval,
                 retriever.id(),
                 executor.id(),
                 ActionType::ExecuteTool,
@@ -174,22 +172,6 @@ impl Runtime {
             .handle(self.context(trace.clone(), mode), summary_request)
             .await?;
         self.record_message(&trace, &summary).await?;
-
-        for state_ref in &summary.state_refs {
-            self.evaluator
-                .record(Event::new(
-                    experiment_id,
-                    task_id,
-                    EventKind::StateTransfer {
-                        state_id: state_ref.state_id,
-                        format: format!("{:?}", state_ref.format),
-                        byte_len: state_ref.byte_len,
-                        producer: state_ref.producer.to_string(),
-                        consumer: "summarizer".to_owned(),
-                    },
-                ))
-                .await?;
-        }
 
         let duration_ms = start.elapsed().as_millis() as u64;
         self.evaluator
@@ -326,7 +308,6 @@ impl Runtime {
 
     fn next_request(
         &self,
-        _previous: &Message,
         from: AgentId,
         to: AgentId,
         action: ActionType,
@@ -487,15 +468,18 @@ impl Agent for RetrieverAgent {
             .unwrap_or_else(|| prompt.clone());
         let tags = split_csv(params.get("tags").map(String::as_str).unwrap_or_default());
         let embedding = deterministic_embedding(&format!("{topic} {prompt}"), 32);
-        let hits = ctx
-            .memory
-            .search(MemoryQuery {
-                query: format!("{topic} {prompt}"),
-                tags: tags.clone(),
-                embedding: embedding.clone(),
-                limit: 5,
-            })
-            .await?;
+        let hits = if ctx.mode == RunMode::Structured {
+            ctx.memory
+                .search(MemoryQuery {
+                    query: format!("{topic} {prompt}"),
+                    tags: tags.clone(),
+                    embedding: embedding.clone(),
+                    limit: 5,
+                })
+                .await?
+        } else {
+            Vec::new()
+        };
         let adopted = hits.iter().filter(|hit| hit.score >= 0.20).count();
         ctx.evaluator
             .record(Event::new(
@@ -508,16 +492,18 @@ impl Agent for RetrieverAgent {
                 },
             ))
             .await?;
-        for hit in hits.iter().filter(|hit| hit.score >= 0.20) {
-            ctx.memory
-                .record_reuse(MemoryReuseEvent {
-                    memory_id: hit.memory_id,
-                    task_id: ctx.trace.task_id,
-                    adopted: true,
-                    reason: hit.reason.clone(),
-                    created_at: Utc::now(),
-                })
-                .await?;
+        if ctx.mode == RunMode::Structured {
+            for hit in hits.iter().filter(|hit| hit.score >= 0.20) {
+                ctx.memory
+                    .record_reuse(MemoryReuseEvent {
+                        memory_id: hit.memory_id,
+                        task_id: ctx.trace.task_id,
+                        adopted: true,
+                        reason: hit.reason.clone(),
+                        created_at: Utc::now(),
+                    })
+                    .await?;
+            }
         }
 
         let evidence = serde_json::json!({
@@ -681,10 +667,9 @@ impl Agent for SummarizerAgent {
             if matches!(
                 state_ref.format,
                 StateFormat::EvidencePackJson | StateFormat::ToolOutputJson
-            ) {
-                if let Ok(bytes) = ctx.state.get(state_ref).await {
-                    evidence_fragments.push(String::from_utf8_lossy(&bytes).to_string());
-                }
+            ) && let Ok(bytes) = ctx.state.get(state_ref).await
+            {
+                evidence_fragments.push(String::from_utf8_lossy(&bytes).to_string());
             }
         }
         let summary = if ctx.mode == RunMode::Structured {
@@ -720,22 +705,27 @@ impl Agent for SummarizerAgent {
             quality_score: 0.5,
             reuse_count: 0i64,
         };
-        let memory_id = ctx.memory.put(memory).await?;
-        ctx.evaluator
-            .record(Event::new(
-                ctx.trace.experiment_id,
-                ctx.trace.task_id,
-                EventKind::MemoryWritten {
-                    memory_id,
-                    topic: topic.clone(),
-                    source_agent: self.id().to_string(),
-                },
-            ))
-            .await?;
-        let result = BTreeMap::from([
-            ("answer".to_owned(), summary),
-            ("memory_id".to_owned(), memory_id.to_string()),
-        ]);
+        let memory_id = if ctx.mode == RunMode::Structured {
+            let memory_id = ctx.memory.put(memory).await?;
+            ctx.evaluator
+                .record(Event::new(
+                    ctx.trace.experiment_id,
+                    ctx.trace.task_id,
+                    EventKind::MemoryWritten {
+                        memory_id,
+                        topic: topic.clone(),
+                        source_agent: self.id().to_string(),
+                    },
+                ))
+                .await?;
+            Some(memory_id)
+        } else {
+            None
+        };
+        let mut result = BTreeMap::from([("answer".to_owned(), summary)]);
+        if let Some(memory_id) = memory_id {
+            result.insert("memory_id".to_owned(), memory_id.to_string());
+        }
         Ok(Message::new(
             self.id(),
             Target::Runtime,
@@ -837,9 +827,55 @@ fn keywords(text: &str) -> Vec<String> {
 fn synthetic_evidence(params: &BTreeMap<String, String>) -> Vec<String> {
     let topic = params.get("topic").map(String::as_str).unwrap_or("task");
     vec![
-        format!("{topic}: structured protocol keeps action and parameters machine-readable"),
-        format!("{topic}: StateRef avoids re-sending large evidence payloads"),
-        format!("{topic}: shared memory enables linked follow-up reuse"),
+        format!(
+            "{topic}: task context, decision criteria, prior assumptions, and candidate evidence \
+             are carried together so downstream agents can reason without requesting hidden state."
+        ),
+        format!(
+            "{topic}: structured protocol keeps action names, input parameters, return values, \
+             capability descriptions, and routing intent machine-readable instead of burying them \
+             inside natural-language paragraphs."
+        ),
+        format!(
+            "{topic}: StateRef avoids re-sending large evidence payloads by moving evidence packs, \
+             embeddings, and tool output into the state store while messages carry only identifiers, \
+             format metadata, byte sizes, and checksums."
+        ),
+        format!(
+            "{topic}: in pure text collaboration the retriever has to inline the evidence bundle, \
+             memory rationale, prompt restatement, and provenance hints for every consumer because \
+             there is no shared binary state handle."
+        ),
+        format!(
+            "{topic}: the summarizer can consume structured evidence by dereferencing state handles, \
+             validating checksums, and combining only the relevant fragments instead of reparsing a \
+             long transcript."
+        ),
+        format!(
+            "{topic}: shared memory enables linked follow-up reuse by storing the task topic, source \
+             agent, creation time, summary, tags, keywords, embedding, quality score, and evidence \
+             references as a stable memory unit."
+        ),
+        format!(
+            "{topic}: keyword, tag, and deterministic embedding retrieval provide reproducible \
+             memory hits across the linked benchmark tasks, making reuse measurable without an \
+             external model service."
+        ),
+        format!(
+            "{topic}: the evaluator records message counts, textual characters, encoded bytes, \
+             transferred state bytes, task duration, memory queries, adopted hits, and completion \
+             events so the report can be recomputed from JSONL logs."
+        ),
+        format!(
+            "{topic}: the executor path demonstrates CodeAct-style analysis by running a small \
+             Python or shell snippet through the restricted process backend and returning tool \
+             output as state in structured mode."
+        ),
+        format!(
+            "{topic}: repeated tasks in the same group should benefit from prior structured memory \
+             while still preserving evidence provenance, which is why the benchmark alternates \
+             knowledge tasks and code-analysis strategy tasks."
+        ),
     ]
 }
 

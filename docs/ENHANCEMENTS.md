@@ -11,7 +11,7 @@
 ## CodeAct Restricted Process Sandbox
 
 - Crate：`crates/memlink-sandbox`
-- 能力：`RestrictedProcessSandbox` 在临时目录、清理后的环境变量、超时和输出大小限制下执行 Python/Shell 片段。
+- 能力：`RestrictedProcessSandbox` 在临时目录、清理后的环境变量、超时和输出大小限制下执行 Python/Shell 片段；Unix 下附加进程组清理与 rlimit。
 - Runtime 接入：`ExecutorAgent` 使用 sandbox 分析代码片段，并将结果写入 tool output state。
 - 验证：`crates/memlink-sandbox/tests/restricted_process.rs` 与 `crates/memlink-runtime/tests/runtime_flow.rs`
 
@@ -32,5 +32,5 @@
 ## 仍保留为后续演进
 
 - POSIX shared memory 与 FD passing：当前已实现 mmap/file-backed 状态后端，但尚未实现真实跨进程 FD 传递。
-- WASM/WASI：当前先用受限子进程满足 CodeAct 隔离 MVP，后续可替换 `Sandbox` trait 实现。
+- WASM/WASI：当前先用受限子进程满足 CodeAct 执行 MVP，但不声称强隔离；后续可替换 `Sandbox` trait 实现。
 - eBPF：当前提供轻量系统观测快照，后续可在 `memlink-observe` 中接入 aya/libbpf。

@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use memlink_protocol::{ExperimentId, MessageKind, RunMode, TaskId};
@@ -158,13 +158,21 @@ pub async fn summarize_events(
     path: impl AsRef<Path>,
     mode: Option<RunMode>,
 ) -> Result<MetricsSummary> {
-    let content = tokio::fs::read_to_string(path).await.unwrap_or_default();
+    let path = path.as_ref();
+    let content = tokio::fs::read_to_string(path)
+        .await
+        .with_context(|| format!("read event log {}", path.display()))?;
     let mut summary = MetricsSummary {
         mode,
         ..MetricsSummary::default()
     };
-    for line in content.lines().filter(|line| !line.trim().is_empty()) {
-        let event: Event = serde_json::from_str(line)?;
+    for (index, line) in content
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        let event: Event = serde_json::from_str(line)
+            .with_context(|| format!("parse event log {} line {}", path.display(), index + 1))?;
         match event.kind {
             EventKind::MessageMetric {
                 text_chars,
@@ -209,7 +217,7 @@ pub async fn summarize_events(
 
 pub fn comparison_report(text: &MetricsSummary, structured: &MetricsSummary) -> String {
     let text_saving = saving(structured.text_chars, text.text_chars);
-    let byte_saving = saving(structured.encoded_bytes, text.text_chars);
+    let byte_saving = saving(structured.encoded_bytes, text.encoded_bytes);
     let latency_improvement = saving(structured.duration_ms, text.duration_ms);
     format!(
         "# MemLink Experiment Report\n\n| Metric | Text | Structured | Improvement |\n| --- | ---: | ---: | ---: |\n| Tasks | {} | {} | - |\n| Success | {} | {} | - |\n| Messages | {} | {} | - |\n| Text chars | {} | {} | {:.2}% |\n| Encoded bytes | {} | {} | {:.2}% |\n| State transfers | {} | {} | - |\n| State bytes | {} | {} | - |\n| Duration ms | {} | {} | {:.2}% |\n| Memory queries with hits | {} | {} | - |\n| Memory hit rate | {:.2}% | {:.2}% | - |\n| Effective reuse rate | {:.2}% | {:.2}% | - |\n\nStructured mode carries large intermediate artifacts as `StateRef` handles and reuses SQLite-backed memories across linked tasks.\n",
@@ -246,5 +254,52 @@ pub fn saving(current: u64, baseline: u64) -> f64 {
         0.0
     } else {
         1.0 - current as f64 / baseline as f64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn comparison_report_uses_encoded_bytes_baseline_for_byte_saving() {
+        let text = MetricsSummary {
+            task_count: 1,
+            success_count: 1,
+            message_count: 1,
+            text_chars: 100,
+            encoded_bytes: 400,
+            duration_ms: 100,
+            ..MetricsSummary::default()
+        };
+        let structured = MetricsSummary {
+            task_count: 1,
+            success_count: 1,
+            message_count: 1,
+            text_chars: 90,
+            encoded_bytes: 100,
+            duration_ms: 100,
+            ..MetricsSummary::default()
+        };
+
+        let report = comparison_report(&text, &structured);
+
+        assert!(report.contains("| Encoded bytes | 400 | 100 | 75.00% |"));
+    }
+
+    #[tokio::test]
+    async fn summarize_events_reports_missing_log_file() {
+        let path =
+            std::env::temp_dir().join(format!("memlink-missing-events-{}.jsonl", Uuid::new_v4()));
+
+        let error = summarize_events(&path, Some(RunMode::Structured))
+            .await
+            .expect_err("missing event log should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("read event log {}", path.display()))
+        );
     }
 }

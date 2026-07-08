@@ -607,6 +607,7 @@ name = "memlink-sandbox"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "libc",
  "memlink-protocol",
  "serde",
  "tempfile",

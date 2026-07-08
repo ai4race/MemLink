@@ -4,6 +4,7 @@ use memlink_protocol::{AgentId, MemoryHit, MemoryId, StateRef};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::task;
 use uuid::Uuid;
@@ -50,6 +51,8 @@ pub trait MemoryStore: Send + Sync {
 
 #[derive(Debug, Error)]
 pub enum MemoryError {
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("json error: {0}")]
@@ -67,7 +70,7 @@ impl SqliteMemoryStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, MemoryError> {
         let path = path.as_ref().to_path_buf();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).ok();
+            std::fs::create_dir_all(parent)?;
         }
         let store = Self { path };
         store.init()?;
@@ -75,7 +78,9 @@ impl SqliteMemoryStore {
     }
 
     fn connect(&self) -> Result<Connection, MemoryError> {
-        Ok(Connection::open(&self.path)?)
+        let connection = Connection::open(&self.path)?;
+        connection.busy_timeout(Duration::from_secs(5))?;
+        Ok(connection)
     }
 
     fn init(&self) -> Result<(), MemoryError> {
@@ -182,7 +187,7 @@ impl MemoryStore for SqliteMemoryStore {
                     serde_json::to_string(&memory.embedding)?,
                     serde_json::to_string(&memory.evidence_refs)?,
                     memory.quality_score,
-                    memory.reuse_count as i64,
+                    memory.reuse_count,
                 ],
             )?;
             transaction.execute(

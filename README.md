@@ -24,7 +24,7 @@
 系统需统计并展示 Agent 间消息次数、文本通信 token 或字符开销、非文本状态传递次数及数据规模、单任务总耗时、共享记忆命中率及整体性能提升情况；
 系统架构中至少应包含多 Agent 运行时、协议解析与调度模块、状态交换模块、共享记忆存储与检索模块和评测模块，并能够稳定执行不少于 10 轮连续任务；
 需提交完整源码、系统设计文档、部署文档、实验报告和演示视频，能够支持评审现，鼓励结合 IPC、共享内存、Socket、向量数据库、WASM/容器沙箱、eBPF 等系统技术提升实现质量。
-鼓励系统能够支持基于 CodeAct 模式的 Agent 执行机制，允许 LLM 生成 Python 可执行代码，并在轻量沙箱中安全运行，实现低延迟、可隔离的代码执行与结果回传能力。
+鼓励系统能够支持基于 CodeAct 模式的 Agent 执行机制，允许 LLM 生成 Python 可执行代码，并通过轻量执行隔离或沙箱实现低延迟、可审计的结果回传能力。
 
 
 # 赛题要求
@@ -91,7 +91,7 @@ cargo run -p memlink-cli -- memory search --query "StateRef shared memory" --tag
 
 ## Enhanced Modules
 
-- `crates/memlink-sandbox`：受限 CodeAct 子进程沙箱，Executor 可用它执行 Python/Shell 分析片段。
+- `crates/memlink-sandbox`：受限 CodeAct 子进程后端，Executor 可用它执行 Python/Shell 分析片段；不是 WASM/容器级强隔离。
 - `crates/memlink-transport`：Unix Domain Socket 结构化 frame 传输，保留 `StateRef` 列表用于多进程扩展。
 - `crates/memlink-observe`：系统观测快照，支持 CLI 输出 `reports/observe.json`。
 
